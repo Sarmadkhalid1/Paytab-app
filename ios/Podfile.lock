@@ -8,6 +8,7 @@ PODS:
   - hermes-engine (0.77.3):
     - hermes-engine/Pre-built (= 0.77.3)
   - hermes-engine/Pre-built (0.77.3)
+  - PayTabsSDK (6.6.50)
   - RCT-Folly (2024.11.18.00):
     - boost
     - DoubleConversion
@@ -1210,6 +1211,9 @@ PODS:
     - React-jsiexecutor
     - React-RCTFBReactNativeSpec
     - ReactCommon/turbomodule/core
+  - react-native-paymentsdk (2.8.12):
+    - PayTabsSDK (= 6.6.50)
+    - React
   - React-nativeconfig (0.77.3)
   - React-NativeModulesApple (0.77.3):
     - glog
@@ -1541,6 +1545,7 @@ DEPENDENCIES:
   - React-logger (from `../node_modules/react-native/ReactCommon/logger`)
   - React-Mapbuffer (from `../node_modules/react-native/ReactCommon`)
   - React-microtasksnativemodule (from `../node_modules/react-native/ReactCommon/react/nativemodule/microtasks`)
+  - "react-native-paymentsdk (from `../node_modules/@paytabs/react-native-paytabs`)"
   - React-nativeconfig (from `../node_modules/react-native/ReactCommon`)
   - React-NativeModulesApple (from `../node_modules/react-native/ReactCommon/react/nativemodule/core/platform/ios`)
   - React-perflogger (from `../node_modules/react-native/ReactCommon/reactperflogger`)
@@ -1574,6 +1579,7 @@ DEPENDENCIES:
 
 SPEC REPOS:
   trunk:
+    - PayTabsSDK
     - SocketRocket
 
 EXTERNAL SOURCES:
@@ -1650,6 +1656,8 @@ EXTERNAL SOURCES:
     :path: "../node_modules/react-native/ReactCommon"
   React-microtasksnativemodule:
     :path: "../node_modules/react-native/ReactCommon/react/nativemodule/microtasks"
+  react-native-paymentsdk:
+    :path: "../node_modules/@paytabs/react-native-paytabs"
   React-nativeconfig:
     :path: "../node_modules/react-native/ReactCommon"
   React-NativeModulesApple:
@@ -1719,6 +1727,7 @@ SPEC CHECKSUMS:
   fmt: a40bb5bd0294ea969aaaba240a927bd33d878cdd
   glog: eb93e2f488219332457c3c4eafd2738ddc7e80b8
   hermes-engine: b2187dbe13edb0db8fcb2a93a69c1987a30d98a4
+  PayTabsSDK: 7a4c56213cad16024018d41c4176b1687ff45291
   RCT-Folly: 36fe2295e44b10d831836cc0d1daec5f8abcf809
   RCTDeprecation: 6ee92578d332db1d4e03267d3ae98bcf8b780863
   RCTRequired: 5b3da0e0f91fddda935574b81748c3e3d3649ee7
@@ -1748,6 +1757,7 @@ SPEC CHECKSUMS:
   React-logger: 094beeb633228cb5d7a1b7235e21c77f901eb1a6
   React-Mapbuffer: ac43f5b92893ee6cba15a712b211191f9dfbf089
   React-microtasksnativemodule: c32cbd3d9c334a51311ab9d717e2c72c7032a256
+  react-native-paymentsdk: 1ecf2f53bc6f43a2933a507559d741500aa940b6
   React-nativeconfig: f77b4627803bf7886a1f2e96b33b8af34e583cc4
   React-NativeModulesApple: 6bfb56c8a05c9181727a4375c6fce152171c038d
   React-perflogger: 6820403fcb3daf843cb89772f2ba7b25cf7d5797
@@ -1780,6 +1790,6 @@ SPEC CHECKSUMS:
   SocketRocket: d4aabe649be1e368d1318fdf28a022d714d65748
   Yoga: 92f3bb322c40a86b7233b815854730442e01b8c4
 
-PODFILE CHECKSUM: b2fcdf5b9f7d865c7b386b4472c979a1dc6fe352
+PODFILE CHECKSUM: d3670f0d08aa9ea9aac71f16fbd13cd049e0f43e
 
 COCOAPODS: 1.16.2
