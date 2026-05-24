@@ -1,8 +1,11 @@
-
-import React, {useState} from 'react';
+import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {
   ActivityIndicator,
   Alert,
+  AppState,
+  type AppStateStatus,
+  NativeModules,
+  Platform,
   SafeAreaView,
   ScrollView,
   StatusBar,
@@ -19,10 +22,18 @@ import {
 } from '@paytabs/react-native-paytabs';
 
 type PaymentResult = {
-  status: 'success' | 'cancelled' | 'error';
+  status: 'success' | 'cancelled' | 'error' | 'native_crash';
   message: string;
   raw?: unknown;
 };
+
+type DiagnosticLine = {
+  id: string;
+  level: 'info' | 'warn' | 'error';
+  text: string;
+};
+
+const PAYTABS_NATIVE_MODULE = 'RNPaymentManager';
 
 function buildConfiguration(): PaymentSDKConfiguration {
   const billingDetails = new PaymentSDKBillingDetails();
@@ -53,27 +64,200 @@ function buildConfiguration(): PaymentSDKConfiguration {
   return configuration;
 }
 
+/** Turn any thrown/rejected value into a readable string for the UI. */
+function formatPayTabsError(error: unknown): string {
+  if (error == null) {
+    return 'Unknown error (null).';
+  }
+  if (typeof error === 'string') {
+    return error;
+  }
+  if (error instanceof Error) {
+    const parts = [error.message];
+    if (error.name && error.name !== 'Error') {
+      parts.unshift(`${error.name}:`);
+    }
+    if (error.stack) {
+      parts.push(`\n\nStack:\n${error.stack}`);
+    }
+    return parts.join(' ');
+  }
+  const anyErr = error as Record<string, unknown>;
+  const code =
+    anyErr.code ?? anyErr.errorCode ?? anyErr.nativeErrorCode ?? anyErr.errorCode;
+  const message =
+    anyErr.message ??
+    anyErr.msg ??
+    anyErr.localizedDescription ??
+    anyErr.userInfo ??
+    'Unknown error from PayTabs SDK.';
+  const userInfo = anyErr.userInfo ?? anyErr.nativeStackAndroid;
+  let out = code != null ? `[${String(code)}] ${String(message)}` : String(message);
+  if (userInfo != null) {
+    try {
+      out += `\n\nDetails:\n${JSON.stringify(userInfo, null, 2)}`;
+    } catch {
+      out += `\n\nDetails: ${String(userInfo)}`;
+    }
+  }
+  try {
+    out += `\n\nFull payload:\n${JSON.stringify(error, null, 2)}`;
+  } catch {
+    // ignore circular refs
+  }
+  return out;
+}
+
+function runPreflightChecks(): DiagnosticLine[] {
+  const lines: DiagnosticLine[] = [];
+
+  lines.push({
+    id: 'platform',
+    level: 'info',
+    text: `Platform: ${Platform.OS} ${String(Platform.Version)}`,
+  });
+
+  const nativeModule = NativeModules[PAYTABS_NATIVE_MODULE];
+  if (nativeModule == null) {
+    lines.push({
+      id: 'native-module',
+      level: 'error',
+      text: `Native module "${PAYTABS_NATIVE_MODULE}" is missing. Rebuild the app (cd android && ./gradlew clean, then npx react-native run-android).`,
+    });
+  } else {
+    const methods = Object.keys(nativeModule).filter(
+      k => typeof nativeModule[k] === 'function',
+    );
+    lines.push({
+      id: 'native-module',
+      level: 'info',
+      text: `Native module OK. Methods: ${methods.join(', ') || '(none)'}`,
+    });
+  }
+
+  if (typeof RNPaymentSDKLibrary?.startCardPayment !== 'function') {
+    lines.push({
+      id: 'bridge',
+      level: 'error',
+      text: 'RNPaymentSDKLibrary.startCardPayment is not a function.',
+    });
+  }
+
+  if (Platform.OS === 'android') {
+    lines.push({
+      id: 'android-note',
+      level: 'warn',
+      text:
+        'If the whole app closes on Pay Now (no JS error), that is a native crash in PayTabs PaymentSdkActivity — check Metro/logcat. Common fix: androidx.core must be 1.17+ (see android/build.gradle).',
+    });
+  }
+
+  return lines;
+}
+
 function App(): React.JSX.Element {
   const isDarkMode = useColorScheme() === 'dark';
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<PaymentResult | null>(null);
+  const [diagnostics, setDiagnostics] = useState<DiagnosticLine[]>(() =>
+    runPreflightChecks(),
+  );
+  const paymentInFlight = useRef(false);
+  const appStateBeforePayment = useRef<AppStateStatus>(AppState.currentState);
+
+  const appendDiagnostic = useCallback((line: DiagnosticLine) => {
+    setDiagnostics(prev => [...prev, line]);
+  }, []);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', nextState => {
+      if (!paymentInFlight.current) {
+        appStateBeforePayment.current = nextState;
+        return;
+      }
+      // Payment screen opened → app often goes to background; returning without
+      // a promise result may mean a native crash killed the JS bridge.
+      if (
+        appStateBeforePayment.current.match(/inactive|background/) &&
+        nextState === 'active'
+      ) {
+        appendDiagnostic({
+          id: `appstate-${Date.now()}`,
+          level: 'info',
+          text: `App returned to foreground (${nextState}). Waiting for PayTabs promise…`,
+        });
+      }
+      appStateBeforePayment.current = nextState;
+    });
+    return () => subscription.remove();
+  }, [appendDiagnostic]);
 
   const startPayment = async () => {
     setLoading(true);
     setResult(null);
+    setDiagnostics(runPreflightChecks());
+    paymentInFlight.current = true;
+
+    const preflight = runPreflightChecks();
+    const blocking = preflight.filter(l => l.level === 'error');
+    if (blocking.length > 0) {
+      const message = blocking.map(l => l.text).join('\n\n');
+      setResult({status: 'error', message, raw: {preflight}});
+      Alert.alert('Cannot start payment', message);
+      setLoading(false);
+      paymentInFlight.current = false;
+      return;
+    }
+
+    let configurationJson = '';
     try {
       const configuration = buildConfiguration();
-      const response: any = await RNPaymentSDKLibrary.startCardPayment(
-        JSON.stringify(configuration),
+      configurationJson = JSON.stringify(configuration);
+      appendDiagnostic({
+        id: 'config',
+        level: 'info',
+        text: `Config built (cartID=${configuration.cartID}, amount=${configuration.amount} ${configuration.currency}).`,
+      });
+    } catch (error) {
+      const message = formatPayTabsError(error);
+      console.error('[PayTabs] buildConfiguration failed:', error);
+      setResult({
+        status: 'error',
+        message: `Failed to build payment config:\n${message}`,
+        raw: error,
+      });
+      Alert.alert('Configuration error', message);
+      setLoading(false);
+      paymentInFlight.current = false;
+      return;
+    }
+
+    try {
+      appendDiagnostic({
+        id: 'invoke',
+        level: 'info',
+        text: 'Calling RNPaymentSDKLibrary.startCardPayment…',
+      });
+
+      const response: unknown = await RNPaymentSDKLibrary.startCardPayment(
+        configurationJson,
       );
 
-      if (response?.PaymentDetails) {
+      appendDiagnostic({
+        id: 'response',
+        level: 'info',
+        text: `Native bridge returned: ${JSON.stringify(response)}`,
+      });
+
+      const res = response as Record<string, unknown> | null;
+
+      if (res?.PaymentDetails != null) {
         setResult({
           status: 'success',
           message: 'Payment completed.',
-          raw: response.PaymentDetails,
+          raw: res.PaymentDetails,
         });
-      } else if (response?.Event === 'CancelPayment') {
+      } else if (res?.Event === 'CancelPayment') {
         setResult({status: 'cancelled', message: 'Payment was cancelled.'});
       } else {
         setResult({
@@ -82,15 +266,23 @@ function App(): React.JSX.Element {
           raw: response,
         });
       }
-    } catch (error: any) {
-      const message =
-        typeof error === 'string'
-          ? error
-          : error?.message ?? 'Unknown error from PayTabs SDK.';
-      setResult({status: 'error', message, raw: error});
-      Alert.alert('Payment failed', message);
+    } catch (error) {
+      const message = formatPayTabsError(error);
+      console.error('[PayTabs] startCardPayment rejected:', error);
+      appendDiagnostic({
+        id: 'catch',
+        level: 'error',
+        text: `Promise rejected: ${message}`,
+      });
+      setResult({
+        status: 'error',
+        message: `PayTabs error:\n${message}`,
+        raw: error,
+      });
+      Alert.alert('Payment failed (JS)', message.slice(0, 500));
     } finally {
       setLoading(false);
+      paymentInFlight.current = false;
     }
   };
 
@@ -147,6 +339,29 @@ function App(): React.JSX.Element {
           )}
         </TouchableOpacity>
 
+        <View style={[styles.diagBox, {backgroundColor: theme.card}]}>
+          <Text style={[styles.diagTitle, {color: theme.text}]}>
+            Diagnostics
+          </Text>
+          {diagnostics.map(line => (
+            <Text
+              key={line.id}
+              style={[
+                styles.diagLine,
+                {
+                  color:
+                    line.level === 'error'
+                      ? '#ef4444'
+                      : line.level === 'warn'
+                      ? '#f59e0b'
+                      : theme.subtext,
+                },
+              ]}>
+              {line.text}
+            </Text>
+          ))}
+        </View>
+
         {result && (
           <View
             style={[
@@ -176,8 +391,8 @@ function App(): React.JSX.Element {
         )}
 
         <Text style={[styles.footnote, {color: theme.subtext}]}>
-          Replace the placeholder credentials in App.tsx with your PayTabs
-          profile ID, server key, and client key before testing a real payment.
+          Replace placeholder credentials in App.tsx before a real payment. If
+          Android closes instantly on Pay Now, run: adb logcat -b crash -d
         </Text>
       </ScrollView>
     </SafeAreaView>
@@ -259,8 +474,23 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
   },
+  diagBox: {
+    marginTop: 20,
+    padding: 12,
+    borderRadius: 12,
+  },
+  diagTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    marginBottom: 8,
+  },
+  diagLine: {
+    fontSize: 12,
+    lineHeight: 18,
+    marginBottom: 6,
+  },
   resultBox: {
-    marginTop: 24,
+    marginTop: 16,
     padding: 16,
     borderRadius: 12,
     borderWidth: 1,
